@@ -103,7 +103,7 @@ class LocalWhisperTranscriber(Transcriber):
 
         self.logger.info("Beginning transcription")
         start = time.time()
-        result = model.transcribe(audio_file_path, fp16=False, language="English")
+        result = model.transcribe(audio_file_path, fp16=False)
         end = time.time()
         elapsed = end - start
         self.logger.info(f"Transcription completed in {elapsed}")
