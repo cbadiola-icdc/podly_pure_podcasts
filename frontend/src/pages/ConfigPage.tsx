@@ -14,6 +14,7 @@ import type {
   WhisperConfig,
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
+import AdminUserStats from '../components/AdminUserStats';
 
 const ENV_FIELD_LABELS: Record<string, string> = {
   'groq.api_key': 'Groq API Key',
@@ -112,8 +113,6 @@ export default function ConfigPage() {
 
   const [pending, setPending] = useState<CombinedConfig | null>(null);
   const [hasEdits, setHasEdits] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showUserManagement, setShowUserManagement] = useState(false);
   const [showGroqHelp, setShowGroqHelp] = useState(false);
   const [showGroqPricing, setShowGroqPricing] = useState(false);
   const [showBaseUrlInfo, setShowBaseUrlInfo] = useState(false);
@@ -383,11 +382,16 @@ export default function ConfigPage() {
       }
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
-      setLlmStatus('error');
-      setWhisperStatus('error');
       const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || 'Connection test failed';
-      setLlmError(msg);
-      setWhisperError(msg);
+      // Only set error status if we haven't already set a success status
+      if (llmStatus !== 'ok') {
+        setLlmStatus('error');
+        setLlmError(msg);
+      }
+      if (whisperStatus !== 'ok') {
+        setWhisperStatus('error');
+        setWhisperError(msg);
+      }
     }
   };
 
@@ -471,7 +475,7 @@ export default function ConfigPage() {
     <div className="flex items-center justify-end">
       <button
         onClick={handleSave}
-        className="px-3 py-2 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+        className="px-3 py-2 text-sm rounded bg-gradient-to-r from-purple-600 to-pink-500 text-white hover:from-purple-700 hover:to-pink-600 disabled:opacity-60"
         disabled={saveMutation.isPending}
       >
         {saveMutation.isPending ? 'Saving...' : 'Save Changes'}
@@ -548,7 +552,14 @@ export default function ConfigPage() {
   }, [localWhisperAvailable, pending]);
 
   if (isLoading || !pending) {
-    return <div className="text-sm text-gray-700">Loading configuration...</div>;
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="flex flex-col items-center gap-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+          <p className="text-sm text-gray-500">Loading configuration...</p>
+        </div>
+      </div>
+    );
   }
 
   const handleWhisperTypeChange = (
@@ -612,84 +623,135 @@ export default function ConfigPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-900">Configuration</h2>
+        <div>
+          <h1 className="text-2xl font-bold rainbow-text">Settings ⚙️</h1>
+          <p className="text-purple-600 mt-1">Configure your LLM and Whisper connections</p>
+        </div>
+        {hasEdits && (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-pink-600">✨ Unsaved changes</span>
+            <button
+              onClick={() => {
+                setPending(configData ?? null);
+                setHasEdits(false);
+              }}
+              className="px-4 py-2 text-sm font-medium text-purple-700 bg-white/80 border border-purple-200 rounded-xl hover:bg-purple-50 transition-colors"
+            >
+              Discard
+            </button>
+            <button
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+              className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 rounded-xl hover:shadow-lg hover:shadow-purple-500/30 transition-all disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        )}
       </div>
 
       <Section title="Connection Status">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="flex items-start justify-between border rounded p-3">
-            <div>
-              <div className="text-sm font-medium text-gray-900">LLM</div>
-              <div
-                className={
-                  'text-xs ' +
-                  (llmStatus === 'ok'
-                    ? 'text-green-700'
-                    : llmStatus === 'error'
-                    ? 'text-red-700'
-                    : 'text-gray-600')
-                }
-              >
-                {llmStatus === 'loading' && 'Testing...'}
-                {llmStatus === 'ok' && (llmMessage || 'LLM connection OK')}
-                {llmStatus === 'error' && (llmError || 'LLM connection failed')}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className={`flex items-center justify-between rounded-lg p-4 ${
+            llmStatus === 'ok' ? 'bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700' :
+            llmStatus === 'error' ? 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700' :
+            'bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700'
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-3 h-3 rounded-full ${
+                llmStatus === 'ok' ? 'bg-green-500' :
+                llmStatus === 'error' ? 'bg-red-500' :
+                'bg-purple-400 animate-pulse'
+              }`} />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-purple-100">LLM Connection</div>
+                <div className={`text-xs ${
+                  llmStatus === 'ok' ? 'text-green-700 dark:text-green-300' :
+                  llmStatus === 'error' ? 'text-red-700 dark:text-red-300' :
+                  'text-gray-600 dark:text-purple-300'
+                }`}>
+                  {llmStatus === 'loading' && 'Testing connection...'}
+                  {llmStatus === 'ok' && (llmMessage || 'Connected')}
+                  {llmStatus === 'error' && (llmError || 'Connection failed')}
+                </div>
               </div>
             </div>
             <button
               type="button"
-              className="text-xs text-indigo-600 hover:underline"
+              className="px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-purple-200 bg-white dark:bg-purple-800 border border-gray-300 dark:border-purple-600 rounded-lg hover:bg-gray-50 dark:hover:bg-purple-700 transition-colors"
               onClick={() => void probeConnections()}
             >
-              Retry
+              Test
             </button>
           </div>
-          <div className="flex items-start justify-between border rounded p-3">
-            <div>
-              <div className="text-sm font-medium text-gray-900">Whisper</div>
-              <div
-                className={
-                  'text-xs ' +
-                  (whisperStatus === 'ok'
-                    ? 'text-green-700'
-                    : whisperStatus === 'error'
-                    ? 'text-red-700'
-                    : 'text-gray-600')
-                }
-              >
-                {whisperStatus === 'loading' && 'Testing...'}
-                {whisperStatus === 'ok' && (whisperMessage || 'Whisper connection OK')}
-                {whisperStatus === 'error' && (whisperError || 'Whisper test failed')}
+          <div className={`flex items-center justify-between rounded-lg p-4 ${
+            whisperStatus === 'ok' ? 'bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700' :
+            whisperStatus === 'error' ? 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700' :
+            'bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700'
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-3 h-3 rounded-full ${
+                whisperStatus === 'ok' ? 'bg-green-500' :
+                whisperStatus === 'error' ? 'bg-red-500' :
+                'bg-purple-400 animate-pulse'
+              }`} />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-purple-100">Whisper Connection</div>
+                <div className={`text-xs ${
+                  whisperStatus === 'ok' ? 'text-green-700 dark:text-green-300' :
+                  whisperStatus === 'error' ? 'text-red-700 dark:text-red-300' :
+                  'text-gray-600 dark:text-purple-300'
+                }`}>
+                  {whisperStatus === 'loading' && 'Testing connection...'}
+                  {whisperStatus === 'ok' && (whisperMessage || 'Connected')}
+                  {whisperStatus === 'error' && (whisperError || 'Connection failed')}
+                </div>
               </div>
             </div>
             <button
               type="button"
-              className="text-xs text-indigo-600 hover:underline"
+              className="px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-purple-200 bg-white dark:bg-purple-800 border border-gray-300 dark:border-purple-600 rounded-lg hover:bg-gray-50 dark:hover:bg-purple-700 transition-colors"
               onClick={() => void probeConnections()}
             >
-              Retry
+              Test
             </button>
           </div>
         </div>
       </Section>
 
       <Section title="Quick Setup">
-        <div className="text-sm text-gray-700 mb-2 flex items-center gap-2">
-          <span>Enter your Groq API key to use the recommended setup.</span>
+        <div className="text-sm text-gray-700 dark:text-purple-200 mb-2 flex items-center gap-2">
+          <span>Enter your Groq API key for a fast, cheaper setup. For better ad detection accuracy, use xAI Grok instead (see Advanced Settings).</span>
           <button
             type="button"
-            className="text-indigo-600 hover:underline"
+            className="text-indigo-600 dark:text-indigo-400 hover:underline"
             onClick={() => setShowGroqHelp((v) => !v)}
           >
             {showGroqHelp ? 'Hide help' : '(need help getting a key?)'}
           </button>
           <button
             type="button"
-            className="text-indigo-600 hover:underline"
+            className="text-indigo-600 dark:text-indigo-400 hover:underline"
             onClick={() => setShowGroqPricing((v) => !v)}
           >
             {showGroqPricing ? 'Hide pricing' : '(pricing guide)'}
           </button>
+        </div>
+        
+        {/* Groq vs Grok warning */}
+        <div className="mb-3 p-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg">
+          <div className="flex items-start gap-2">
+            <span className="text-amber-500 text-lg">⚠️</span>
+            <div className="text-sm text-amber-800 dark:text-amber-200">
+              <strong>Groq ≠ Grok!</strong> These are different companies:
+              <ul className="mt-1 ml-4 list-disc text-xs">
+                <li><strong>Groq</strong> (groq.com) - Fast inference platform. Key starts with <code className="bg-amber-100 dark:bg-amber-800 px-1 rounded">gsk_</code></li>
+                <li><strong>Grok</strong> (xAI) - Different LLM provider. Key starts with <code className="bg-amber-100 dark:bg-amber-800 px-1 rounded">xai-</code></li>
+              </ul>
+            </div>
+          </div>
         </div>
         {showGroqHelp && (
           <div className="text-sm text-gray-700 mb-2 bg-indigo-50 border border-indigo-200 rounded p-3 space-y-2">
@@ -836,24 +898,7 @@ export default function ConfigPage() {
         </Field>
       </Section>
 
-      <div className="flex items-center justify-end gap-3">
-        {showSecurityControls && (
-          <button
-            onClick={() => setShowUserManagement((v) => !v)}
-            className="px-3 py-2 text-sm rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
-          >
-            {showUserManagement ? 'Hide User Management' : 'Show User Management'}
-          </button>
-        )}
-        <button
-          onClick={() => setShowAdvanced((v) => !v)}
-          className="px-3 py-2 text-sm rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
-        >
-          {showAdvanced ? 'Hide Advanced Settings' : 'Show Advanced Settings'}
-        </button>
-      </div>
-
-      {showSecurityControls && showUserManagement && (
+      {showSecurityControls && (
                   <Section title="Account Security">
             <form className="grid gap-3 max-w-md" onSubmit={handlePasswordSubmit}>
               <Field label="Current password">
@@ -886,27 +931,27 @@ export default function ConfigPage() {
                   required
                 />
               </Field>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-2 pt-2">
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-60"
+                  className="w-fit px-6 py-2.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-500 text-white text-sm font-medium hover:from-purple-700 hover:to-pink-600 disabled:opacity-60 shadow-sm"
                   disabled={passwordSubmitting}
                 >
                   {passwordSubmitting ? 'Updating…' : 'Update password'}
                 </button>
-                <p className="text-xs text-gray-500">
-                  After updating, rotate <code className="font-mono">PODLY_ADMIN_PASSWORD</code> to match.
+                <p className="text-xs text-purple-500">
+                  After updating, rotate <code className="font-mono bg-purple-50 px-1 rounded">PODLY_ADMIN_PASSWORD</code> to match.
                 </p>
               </div>
             </form>
           </Section>
       )}
-      {showSecurityControls && showUserManagement && (
+      {showSecurityControls && user?.role === 'admin' && (
         <Section title="User Management">
           <div className="space-y-4">
             <form className="grid gap-3 md:grid-cols-2" onSubmit={handleCreateUser}>
               <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-purple-200 mb-1">Username</label>
                 <input
                   className="input"
                   type="text"
@@ -917,7 +962,7 @@ export default function ConfigPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-purple-200 mb-1">Password</label>
                 <input
                   className="input"
                   type="password"
@@ -927,7 +972,7 @@ export default function ConfigPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm password</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-purple-200 mb-1">Confirm password</label>
                 <input
                   className="input"
                   type="password"
@@ -937,7 +982,7 @@ export default function ConfigPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-purple-200 mb-1">Role</label>
                 <select
                   className="input"
                   value={newUser.role}
@@ -950,7 +995,7 @@ export default function ConfigPage() {
               <div className="md:col-span-2 flex items-center justify-start">
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-green-600 text-white text-sm font-medium hover:bg-green-700"
+                  className="px-4 py-2 rounded bg-gradient-to-r from-purple-600 to-pink-500 text-white text-sm font-medium hover:from-purple-700 hover:to-pink-600"
                 >
                   Add user
                 </button>
@@ -958,9 +1003,9 @@ export default function ConfigPage() {
             </form>
 
             <div className="space-y-3">
-              {usersLoading && <div className="text-sm text-gray-600">Loading users…</div>}
+              {usersLoading && <div className="text-sm text-gray-600 dark:text-purple-300">Loading users…</div>}
               {!usersLoading && (!managedUsers || managedUsers.length === 0) && (
-                <div className="text-sm text-gray-600">No additional users configured.</div>
+                <div className="text-sm text-gray-600 dark:text-purple-300">No additional users configured.</div>
               )}
               {!usersLoading && managedUsers && managedUsers.length > 0 && (
                 <div className="space-y-3">
@@ -971,11 +1016,11 @@ export default function ConfigPage() {
                     const isActive = activeResetUser === managed.username;
 
                     return (
-                      <div key={managed.id} className="border border-gray-200 rounded-lg p-3 space-y-3 bg-white">
+                      <div key={managed.id} className="border border-gray-200 dark:border-purple-700 rounded-lg p-3 space-y-3 bg-white dark:bg-slate-800/60">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                           <div>
-                            <div className="text-sm font-semibold text-gray-900">{managed.username}</div>
-                            <div className="text-xs text-gray-500">
+                            <div className="text-sm font-semibold text-gray-900 dark:text-purple-100">{managed.username}</div>
+                            <div className="text-xs text-gray-500 dark:text-purple-400">
                               Added {new Date(managed.created_at).toLocaleString()} • Role {managed.role}
                             </div>
                           </div>
@@ -996,7 +1041,7 @@ export default function ConfigPage() {
                             </select>
                             <button
                               type="button"
-                              className="px-3 py-1 border border-gray-300 rounded-md text-sm hover:bg-gray-50"
+                              className="px-3 py-1 border border-gray-300 dark:border-purple-600 rounded-md text-sm hover:bg-gray-50 dark:hover:bg-purple-800 dark:text-purple-200"
                               onClick={() => {
                                 if (isActive) {
                                   setActiveResetUser(null);
@@ -1025,7 +1070,7 @@ export default function ConfigPage() {
                         {isActive && (
                           <form className="grid gap-2 md:grid-cols-3" onSubmit={handleResetPassword}>
                             <div className="md:col-span-1">
-                              <label className="block text-xs font-medium text-gray-600 mb-1">New password</label>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-purple-300 mb-1">New password</label>
                               <input
                                 className="input"
                                 type="password"
@@ -1035,7 +1080,7 @@ export default function ConfigPage() {
                               />
                             </div>
                             <div className="md:col-span-1">
-                              <label className="block text-xs font-medium text-gray-600 mb-1">Confirm password</label>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-purple-300 mb-1">Confirm password</label>
                               <input
                                 className="input"
                                 type="password"
@@ -1047,11 +1092,11 @@ export default function ConfigPage() {
                             <div className="md:col-span-1 flex items-end gap-2">
                               <button
                                 type="submit"
-                                className="px-4 py-2 rounded bg-indigo-600 text-white text-sm hover:bg-indigo-700"
+                                className="px-4 py-2 rounded bg-gradient-to-r from-purple-600 to-pink-500 text-white text-sm hover:from-purple-700 hover:to-pink-600"
                               >
                                 Update
                               </button>
-                              <p className="text-xs text-gray-500">Share new credentials securely.</p>
+                              <p className="text-xs text-gray-500 dark:text-purple-400">Share new credentials securely.</p>
                             </div>
                           </form>
                         )}
@@ -1065,9 +1110,22 @@ export default function ConfigPage() {
         </Section>
       )}
 
-      {showAdvanced && (
-        <div className="space-y-6">
-          <Section title="LLM">
+      {/* User Statistics - Admin only */}
+      {showSecurityControls && user?.role === 'admin' && (
+        <Section title="User Statistics">
+          <AdminUserStats />
+        </Section>
+      )}
+
+      {/* Advanced Settings - Always visible */}
+      <div className="space-y-6">
+        <div className="border-t border-purple-200 pt-6">
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-purple-100">Advanced Settings</h2>
+            <span className="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700 font-medium">Changes below require clicking "Save Changes" to apply</span>
+          </div>
+        </div>
+        <Section title="LLM Configuration">
             <Field label="API Key" envMeta={getEnvHint('llm.llm_api_key')}>
               <input
                 className="input"
@@ -1092,7 +1150,7 @@ export default function ConfigPage() {
                 </div>
                 <EnvVarHint meta={getEnvHint('llm.openai_base_url')} />
               </div>
-              <div className="flex-1 space-y-2">
+              <div className="flex-1">
                 <input
                   className="input"
                   type="text"
@@ -1101,31 +1159,13 @@ export default function ConfigPage() {
                   onChange={(e) => setField(['llm', 'openai_base_url'], e.target.value)}
                 />
                 {showBaseUrlInfo && (
-                  <div className="text-xs text-gray-700 bg-blue-50 border border-blue-200 rounded p-3 space-y-2">
-                    <p className="font-semibold">When is Base URL used?</p>
-                    <p>
-                      The Base URL is <strong>only used for models without a provider prefix</strong>. 
-                      LiteLLM automatically routes provider-prefixed models to their respective APIs.
-                    </p>
-                    <div className="space-y-1">
-                      <p className="font-medium">✅ Base URL is IGNORED for:</p>
-                      <ul className="list-disc pl-5 space-y-0.5">
-                        <li><code className="bg-white px-1 rounded">groq/openai/gpt-oss-120b</code> → Groq API</li>
-                        <li><code className="bg-white px-1 rounded">anthropic/claude-3.5-sonnet</code> → Anthropic API</li>
-                        <li><code className="bg-white px-1 rounded">gemini/gemini-2.0-flash</code> → Google API</li>
-                      </ul>
+                  <div className="mt-2 text-xs bg-blue-50 border border-blue-200 rounded p-3 space-y-2">
+                    <p className="font-medium text-blue-800">How model routing works:</p>
+                    <div className="text-blue-700 space-y-1">
+                      <p>• Models with a prefix like <code className="bg-white px-1 rounded">groq/</code> or <code className="bg-white px-1 rounded">anthropic/</code> are routed automatically by LiteLLM — the Base URL is ignored.</p>
+                      <p>• Models <strong>without</strong> a prefix (e.g., <code className="bg-white px-1 rounded">gpt-4o</code>) use the Base URL you set here.</p>
                     </div>
-                    <div className="space-y-1">
-                      <p className="font-medium">⚙️ Base URL is USED for:</p>
-                      <ul className="list-disc pl-5 space-y-0.5">
-                        <li>Unprefixed models like <code className="bg-white px-1 rounded">gpt-4o</code></li>
-                        <li>Self-hosted OpenAI-compatible endpoints</li>
-                        <li>LiteLLM proxy servers or local LLMs</li>
-                      </ul>
-                    </div>
-                    <p className="italic text-gray-600">
-                      For the default Groq setup, you don't need to set this.
-                    </p>
+                    <p className="text-blue-600 italic">If you're using Groq with a <code>groq/</code> prefix, you can leave Base URL empty.</p>
                   </div>
                 )}
               </div>
@@ -1220,13 +1260,12 @@ export default function ConfigPage() {
                     }
                   );
                 }}
-                className="mt-2 px-3 py-2 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                className="mt-2 px-3 py-2 text-sm rounded bg-gradient-to-r from-purple-600 to-pink-500 text-white hover:from-purple-700 hover:to-pink-600"
               >
                 Test LLM
               </button>
             </div>
           </Section>
-          {renderSaveButton()}
 
           <Section title="Whisper">
             <Field label="Type" envMeta={getEnvHint('whisper.whisper_type')}>
@@ -1363,13 +1402,12 @@ export default function ConfigPage() {
                     }
                   );
                 }}
-                className="mt-2 px-3 py-2 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                className="mt-2 px-3 py-2 text-sm rounded bg-gradient-to-r from-purple-600 to-pink-500 text-white hover:from-purple-700 hover:to-pink-600"
               >
                 Test Whisper
               </button>
             </div>
           </Section>
-          {renderSaveButton()}
 
           <Section title="Processing">
             <Field label="Number of Segments per Prompt">
@@ -1381,7 +1419,6 @@ export default function ConfigPage() {
               />
             </Field>
           </Section>
-          {renderSaveButton()}
 
           <Section title="Output">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1420,7 +1457,6 @@ export default function ConfigPage() {
               </Field>
             </div>
           </Section>
-          {renderSaveButton()}
 
           <Section title="App">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1460,7 +1496,6 @@ export default function ConfigPage() {
           </Section>
           {renderSaveButton()}
         </div>
-      )}
 
       {showEnvWarning && envWarningPaths.length > 0 && (
         <EnvOverrideWarningModal
@@ -1541,7 +1576,7 @@ function EnvOverrideWarningModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+            className="rounded bg-gradient-to-r from-purple-600 to-pink-500 px-3 py-2 text-sm font-semibold text-white hover:from-purple-700 hover:to-pink-600"
           >
             Save anyway
           </button>
@@ -1551,11 +1586,16 @@ function EnvOverrideWarningModal({
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, children, icon }: { title: string; children: ReactNode; icon?: ReactNode }) {
   return (
-    <div className="bg-white rounded border p-4">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">{title}</h3>
-      <div className="space-y-3">{children}</div>
+    <div className="bg-white/80 backdrop-blur-sm rounded-xl border border-purple-200/50 shadow-sm unicorn-card">
+      <div className="px-4 py-3 border-b border-purple-100/50 bg-gradient-to-r from-pink-50/50 via-purple-50/50 to-cyan-50/50">
+        <h3 className="text-sm font-semibold text-purple-900 flex items-center gap-2">
+          {icon}
+          {title}
+        </h3>
+      </div>
+      <div className="p-4 space-y-3">{children}</div>
     </div>
   );
 }
@@ -1564,19 +1604,24 @@ function Field({
   label,
   children,
   envMeta,
+  description,
 }: {
   label: string;
   children: ReactNode;
   envMeta?: EnvOverrideEntry;
+  description?: string;
 }) {
   return (
-    <label className="flex items-start justify-between gap-3">
-      <div className="w-60">
-        <span className="block text-sm text-gray-700">{label}</span>
-        <EnvVarHint meta={envMeta} />
+    <label className="block">
+      <div className="flex items-start justify-between gap-3">
+        <div className="w-40 flex-shrink-0">
+          <span className="block text-sm text-gray-700">{label}</span>
+          {description && <span className="block text-xs text-gray-500 mt-0.5">{description}</span>}
+          <EnvVarHint meta={envMeta} />
+        </div>
+        <div className="flex-1">{children}</div>
       </div>
-      <div className="flex-1">{children}</div>
-      <style>{`.input{width:100%;padding:0.5rem;border:1px solid #e5e7eb;border-radius:0.375rem;font-size:0.875rem}`}</style>
+      <style>{`.input{width:100%;padding:0.5rem 0.75rem;border:1px solid #d1d5db;border-radius:0.375rem;font-size:0.875rem;transition:all 0.15s}.input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.1)}`}</style>
     </label>
   );
 }

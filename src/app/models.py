@@ -65,7 +65,7 @@ class FeedAccessToken(db.Model):  # type: ignore[name-defined, misc]
 
 
 class Post(db.Model):  # type: ignore[name-defined, misc]
-    feed_id = db.Column(db.Integer, db.ForeignKey("feed.id"), nullable=False)
+    feed_id = db.Column(db.Integer, db.ForeignKey("feed.id"), nullable=False, index=True)
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     guid = db.Column(db.Text, unique=True, nullable=False)
     download_url = db.Column(
@@ -80,6 +80,9 @@ class Post(db.Model):  # type: ignore[name-defined, misc]
     whitelisted = db.Column(db.Boolean, default=False, nullable=False)
     image_url = db.Column(db.Text)  # Episode thumbnail URL
     download_count = db.Column(db.Integer, nullable=True, default=0)
+    processed_with_preset_id = db.Column(
+        db.Integer, db.ForeignKey("prompt_preset.id"), nullable=True
+    )  # Which preset was used to process this episode
 
     segments = db.relationship(
         "TranscriptSegment",
@@ -148,6 +151,51 @@ class User(db.Model):  # type: ignore[name-defined, misc]
 
     def __repr__(self) -> str:
         return f"<User {self.username} role={self.role}>"
+
+
+class UserDownload(db.Model):  # type: ignore[name-defined, misc]
+    """Tracks episode downloads per user for usage statistics."""
+    __tablename__ = "user_download"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False, index=True)
+    downloaded_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    file_size_bytes = db.Column(db.Integer, nullable=True)  # Size of downloaded file
+    is_processed = db.Column(db.Boolean, default=True)  # Was it a processed (ad-free) version?
+
+    # Relationships
+    user = db.relationship("User", backref=db.backref("downloads", lazy="dynamic"))
+    post = db.relationship("Post", backref=db.backref("user_downloads", lazy="dynamic"))
+
+    __table_args__ = (
+        db.Index("ix_user_download_user_date", "user_id", "downloaded_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserDownload user={self.user_id} post={self.post_id} at={self.downloaded_at}>"
+
+
+class UserFeedSubscription(db.Model):  # type: ignore[name-defined, misc]
+    """Tracks which feeds each user has subscribed to for privacy filtering."""
+    __tablename__ = "user_feed_subscription"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    feed_id = db.Column(db.Integer, db.ForeignKey("feed.id"), nullable=False, index=True)
+    subscribed_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    is_private = db.Column(db.Boolean, default=False, nullable=False)  # Hide from admin subscription list
+
+    # Relationships - cascade delete when user or feed is deleted
+    user = db.relationship("User", backref=db.backref("feed_subscriptions", lazy="dynamic", cascade="all, delete-orphan"))
+    feed = db.relationship("Feed", backref=db.backref("subscribers", lazy="dynamic", cascade="all, delete-orphan"))
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "feed_id", name="uq_user_feed_subscription"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserFeedSubscription user={self.user_id} feed={self.feed_id}>"
 
 
 class ModelCall(db.Model):  # type: ignore[name-defined, misc]
@@ -256,6 +304,9 @@ class ProcessingJob(db.Model):  # type: ignore[name-defined, misc]
         db.String(36), db.ForeignKey("jobs_manager_run.id"), index=True
     )
     post_guid = db.Column(db.String(255), nullable=False, index=True)
+    triggered_by_user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), nullable=True, index=True
+    )  # User who triggered this job (None if triggered by RSS request or system)
     status = db.Column(
         db.String(50), nullable=False
     )  # pending, running, completed, failed, cancelled, skipped
@@ -277,6 +328,9 @@ class ProcessingJob(db.Model):  # type: ignore[name-defined, misc]
         foreign_keys=[post_guid],
     )
     run = db.relationship("JobsManagerRun", back_populates="processing_jobs")
+    triggered_by_user = db.relationship(
+        "User", backref=db.backref("triggered_jobs", lazy="dynamic")
+    )
 
     def __repr__(self) -> str:
         return f"<ProcessingJob {self.id} Post:{self.post_guid} Status:{self.status} Step:{self.current_step}/{self.total_steps}>"
@@ -428,3 +482,58 @@ class AppSettings(db.Model):  # type: ignore[name-defined, misc]
 
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+class PromptPreset(db.Model):  # type: ignore[name-defined, misc]
+    """Stores customizable prompt presets with different aggressiveness levels."""
+    __tablename__ = "prompt_preset"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    description = db.Column(db.Text, nullable=True)
+    aggressiveness = db.Column(
+        db.String(20), nullable=False, default="balanced"
+    )  # conservative, balanced, aggressive
+    system_prompt = db.Column(db.Text, nullable=False)
+    user_prompt_template = db.Column(db.Text, nullable=False)
+    min_confidence = db.Column(db.Float, nullable=False, default=0.7)
+    is_active = db.Column(db.Boolean, nullable=False, default=False)
+    is_default = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return f"<PromptPreset {self.name} aggressiveness={self.aggressiveness} active={self.is_active}>"
+
+
+class ProcessingStatistics(db.Model):  # type: ignore[name-defined, misc]
+    """Tracks statistics about ad removal for each processed episode."""
+    __tablename__ = "processing_statistics"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False, unique=True)
+    total_ad_segments_removed = db.Column(db.Integer, nullable=False, default=0)
+    total_duration_removed_seconds = db.Column(db.Float, nullable=False, default=0.0)
+    original_duration_seconds = db.Column(db.Float, nullable=False)
+    processed_duration_seconds = db.Column(db.Float, nullable=False)
+    percentage_removed = db.Column(db.Float, nullable=False, default=0.0)
+    prompt_preset_id = db.Column(
+        db.Integer, db.ForeignKey("prompt_preset.id"), nullable=True
+    )
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    post = db.relationship("Post", backref=db.backref("statistics", uselist=False))
+    prompt_preset = db.relationship("PromptPreset", backref="statistics")
+
+    def __repr__(self) -> str:
+        return (
+            f"<ProcessingStatistics post_id={self.post_id} "
+            f"segments={self.total_ad_segments_removed} "
+            f"removed={self.total_duration_removed_seconds:.1f}s "
+            f"({self.percentage_removed:.1f}%)>"
+        )

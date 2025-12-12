@@ -1,15 +1,16 @@
 import logging
 import os
 from pathlib import Path
-from typing import Dict
+from threading import Thread
+from typing import Any, cast
 
 import flask
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Flask, current_app, g, jsonify, request, send_file
 from flask.typing import ResponseReturnValue
 
 from app.extensions import db
 from app.jobs_manager import get_jobs_manager
-from app.models import Identification, ModelCall, Post, TranscriptSegment
+from app.models import Identification, ModelCall, Post, TranscriptSegment, UserDownload
 from app.posts import clear_post_processing_data
 
 logger = logging.getLogger("global_logger")
@@ -35,12 +36,48 @@ def _increment_download_count(post: Post) -> None:
         db.session.rollback()
 
 
+def _track_user_download(post: Post, is_processed: bool = True) -> None:
+    """Track a download for the current user if authenticated."""
+    try:
+        current_user = getattr(g, "current_user", None)
+        if not current_user:
+            return  # No user to track
+        
+        # Get file size if available
+        file_size = None
+        audio_path = post.processed_audio_path if is_processed else post.unprocessed_audio_path
+        if audio_path and Path(audio_path).exists():
+            file_size = Path(audio_path).stat().st_size
+        
+        download = UserDownload(
+            user_id=current_user.id,
+            post_id=post.id,
+            is_processed=is_processed,
+            file_size_bytes=file_size,
+        )
+        db.session.add(download)
+        db.session.commit()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(
+            "Failed to track download for user %s post %s: %s",
+            getattr(getattr(g, "current_user", None), "id", "?"),
+            post.guid,
+            exc,
+        )
+        db.session.rollback()
+
+
 @post_bp.route("/api/feeds/<int:feed_id>/posts", methods=["GET"])
 def api_feed_posts(feed_id: int) -> flask.Response:
     """Returns a JSON list of posts for a specific feed."""
     from app.models import Feed  # local import to avoid circular in other modules
 
+    # Verify feed exists
     feed = Feed.query.get_or_404(feed_id)
+    
+    # Use optimized direct query with only needed columns
+    posts_query = Post.query.filter_by(feed_id=feed_id).order_by(Post.release_date.desc())
+    
     posts = [
         {
             "id": post.id,
@@ -58,7 +95,7 @@ def api_feed_posts(feed_id: int) -> flask.Response:
             "image_url": post.image_url,
             "download_count": post.download_count,
         }
-        for post in feed.posts
+        for post in posts_query
     ]
     return flask.jsonify(posts)
 
@@ -231,6 +268,14 @@ def api_post_stats(p_guid: str) -> flask.Response:
     content_segments = sum(1 for i in identifications if i.label == "content")
     ad_segments = sum(1 for i in identifications if i.label == "ad")
 
+    # Calculate estimated ad time by summing duration of ad-labeled segments
+    ad_segment_ids = {i.transcript_segment_id for i in identifications if i.label == "ad"}
+    estimated_ad_time_seconds = sum(
+        (seg.end_time - seg.start_time)
+        for seg in transcript_segments
+        if seg.id in ad_segment_ids
+    )
+
     model_call_details = []
     for call in model_calls:
         model_call_details.append(
@@ -301,6 +346,19 @@ def api_post_stats(p_guid: str) -> flask.Response:
             }
         )
 
+    # Get preset info if available
+    preset_info = None
+    if post.processed_with_preset_id:
+        from app.models import PromptPreset
+        preset = PromptPreset.query.get(post.processed_with_preset_id)
+        if preset:
+            preset_info = {
+                "id": preset.id,
+                "name": preset.name,
+                "aggressiveness": preset.aggressiveness,
+                "min_confidence": preset.min_confidence,
+            }
+
     stats_data = {
         "post": {
             "guid": post.guid,
@@ -312,6 +370,7 @@ def api_post_stats(p_guid: str) -> flask.Response:
             "whitelisted": post.whitelisted,
             "has_processed_audio": post.processed_audio_path is not None,
             "download_count": post.download_count,
+            "processed_with_preset": preset_info,
         },
         "processing_stats": {
             "total_segments": len(transcript_segments),
@@ -319,6 +378,7 @@ def api_post_stats(p_guid: str) -> flask.Response:
             "total_identifications": len(identifications),
             "content_segments": content_segments,
             "ad_segments_count": ad_segments,
+            "estimated_ad_time_seconds": round(estimated_ad_time_seconds, 1),
             "model_call_statuses": model_call_statuses,
             "model_types": model_types,
         },
@@ -429,8 +489,12 @@ def api_process_post(p_guid: str) -> ResponseReturnValue:
         )
 
     try:
+        # Get current user ID if authenticated
+        current_user = getattr(g, "current_user", None)
+        user_id = current_user.id if current_user else None
+        
         result = get_jobs_manager().start_post_processing(
-            p_guid, priority="interactive"
+            p_guid, priority="interactive", triggered_by_user_id=user_id
         )
         status_code = 200 if result.get("status") in ("started", "completed") else 400
         return flask.jsonify(result), status_code
@@ -477,10 +541,14 @@ def api_reprocess_post(p_guid: str) -> ResponseReturnValue:
         )
 
     try:
+        # Get current user ID if authenticated
+        current_user = getattr(g, "current_user", None)
+        user_id = current_user.id if current_user else None
+        
         get_jobs_manager().cancel_post_jobs(p_guid)
         clear_post_processing_data(post)
         result = get_jobs_manager().start_post_processing(
-            p_guid, priority="interactive"
+            p_guid, priority="interactive", triggered_by_user_id=user_id
         )
         status_code = 200 if result.get("status") in ("started", "completed") else 400
         if result.get("status") == "started":
@@ -564,7 +632,12 @@ def api_get_post_audio(p_guid: str) -> ResponseReturnValue:
 
 @post_bp.route("/api/posts/<string:p_guid>/download", methods=["GET"])
 def api_download_post(p_guid: str) -> flask.Response:
-    """API endpoint to download processed audio files."""
+    """API endpoint to download processed audio files.
+    
+    If the episode is whitelisted but not yet processed, this will trigger
+    on-demand processing and return 202 Accepted with a Retry-After header.
+    Podcast apps will typically retry the request after the specified delay.
+    """
     logger.info(f"Request to download post with GUID: {p_guid}")
     post = Post.query.filter_by(guid=p_guid).first()
     if post is None:
@@ -576,8 +649,26 @@ def api_download_post(p_guid: str) -> flask.Response:
         return flask.make_response(("Post not whitelisted", 403))
 
     if not post.processed_audio_path or not Path(post.processed_audio_path).exists():
-        logger.warning(f"Processed audio not found for post: {post.id}")
-        return flask.make_response(("Processed audio not found", 404))
+        # Trigger on-demand processing for whitelisted episodes in background thread
+        logger.info(f"Triggering on-demand processing for post: {post.guid}")
+        try:
+            app = cast(Any, current_app)._get_current_object()
+            post_guid = post.guid  # Cache before leaving request context
+            Thread(
+                target=_start_post_processing_async,
+                args=(app, post_guid),
+                daemon=True,
+                name=f"on-demand-process-{post_guid[:8]}",
+            ).start()
+            
+            # Return 202 Accepted with Retry-After header
+            # Podcast apps will retry after this delay
+            response = flask.make_response(("Processing in progress, please retry", 202))
+            response.headers["Retry-After"] = "60"  # Suggest retry in 60 seconds
+            return response
+        except Exception as e:
+            logger.error(f"Failed to trigger on-demand processing for {p_guid}: {e}")
+            return flask.make_response(("Processing not available", 503))
 
     try:
         response = send_file(
@@ -591,6 +682,7 @@ def api_download_post(p_guid: str) -> flask.Response:
         return flask.make_response(("Error serving file", 500))
 
     _increment_download_count(post)
+    _track_user_download(post, is_processed=True)
     return response
 
 
@@ -626,7 +718,22 @@ def api_download_original_post(p_guid: str) -> flask.Response:
         return flask.make_response(("Error serving file", 500))
 
     _increment_download_count(post)
+    _track_user_download(post, is_processed=False)
     return response
+
+
+def _start_post_processing_async(app: Flask, post_guid: str) -> None:
+    """Start post processing in a background thread with proper app context."""
+    with app.app_context():
+        try:
+            result = get_jobs_manager().start_post_processing(
+                post_guid,
+                priority="interactive",
+                triggered_by_user_id=None,  # No user context for RSS requests
+            )
+            logger.info(f"On-demand processing started for {post_guid}: {result}")
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error(f"Failed to start on-demand processing for {post_guid}: {exc}")
 
 
 # Legacy endpoints for backward compatibility

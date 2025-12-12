@@ -1,21 +1,30 @@
 import { useState } from 'react';
 import { feedsApi } from '../services/api';
 import type { PodcastSearchResult } from '../types';
+import { useAuth } from '../contexts/AuthContext';
 
 interface AddFeedFormProps {
   onSuccess: () => void;
+  subscribedFeedUrls?: string[];
 }
 
 type AddMode = 'url' | 'search';
 
 const PAGE_SIZE = 10;
 
-export default function AddFeedForm({ onSuccess }: AddFeedFormProps) {
+export default function AddFeedForm({ onSuccess, subscribedFeedUrls = [] }: AddFeedFormProps) {
   const [url, setUrl] = useState('');
   const [activeMode, setActiveMode] = useState<AddMode>('search');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [addingFeedUrl, setAddingFeedUrl] = useState<string | null>(null);
+  const [addingPrivately, setAddingPrivately] = useState(false);
+  const { requireAuth } = useAuth();
+
+  // Normalize URLs for comparison (remove trailing slashes, lowercase)
+  const normalizeUrl = (url: string) => url.toLowerCase().replace(/\/+$/, '');
+  const subscribedUrlsSet = new Set(subscribedFeedUrls.map(normalizeUrl));
+  const isSubscribed = (feedUrl: string) => subscribedUrlsSet.has(normalizeUrl(feedUrl));
 
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<PodcastSearchResult[]>([]);
@@ -39,13 +48,21 @@ export default function AddFeedForm({ onSuccess }: AddFeedFormProps) {
     await addFeed(url.trim(), 'url');
   };
 
-  const addFeed = async (feedUrl: string, source: AddMode) => {
+  const addFeed = async (feedUrl: string, source: AddMode, isPrivate: boolean = false) => {
     setIsSubmitting(true);
     setAddingFeedUrl(source === 'url' ? 'manual' : feedUrl);
+    setAddingPrivately(isPrivate);
     setError('');
 
     try {
-      await feedsApi.addFeed(feedUrl);
+      // Add the feed first
+      const result = await feedsApi.addFeed(feedUrl);
+      
+      // If auth is enabled and user wants private subscription, update it
+      if (requireAuth && isPrivate && result.feed_id) {
+        await feedsApi.subscribeFeed(result.feed_id, true);
+      }
+      
       if (source === 'url') {
         setUrl('');
       }
@@ -56,6 +73,7 @@ export default function AddFeedForm({ onSuccess }: AddFeedFormProps) {
     } finally {
       setIsSubmitting(false);
       setAddingFeedUrl(null);
+      setAddingPrivately(false);
     }
   };
 
@@ -87,8 +105,8 @@ export default function AddFeedForm({ onSuccess }: AddFeedFormProps) {
     await performSearch();
   };
 
-  const handleAddFromSearch = async (result: PodcastSearchResult) => {
-    await addFeed(result.feedUrl, 'search');
+  const handleAddFromSearch = async (result: PodcastSearchResult, isPrivate: boolean = false) => {
+    await addFeed(result.feedUrl, 'search', isPrivate);
   };
 
   const totalPages =
@@ -271,15 +289,51 @@ export default function AddFeedForm({ onSuccess }: AddFeedFormProps) {
                       )}
                       <p className="text-xs text-gray-500 break-all mt-2">{result.feedUrl}</p>
                     </div>
-                    <div className="flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => handleAddFromSearch(result)}
-                        disabled={isSubmitting && addingFeedUrl === result.feedUrl}
-                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-3 py-2 rounded-md text-sm transition-colors"
-                      >
-                        {isSubmitting && addingFeedUrl === result.feedUrl ? 'Adding...' : 'Add'}
-                      </button>
+                    <div className="flex items-center gap-1">
+                      {isSubscribed(result.feedUrl) ? (
+                        <span className="inline-flex items-center gap-1.5 px-3 py-2 bg-green-100 text-green-700 rounded-md text-sm font-medium">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          Subscribed
+                        </span>
+                      ) : requireAuth ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleAddFromSearch(result, false)}
+                            disabled={isSubmitting && addingFeedUrl === result.feedUrl}
+                            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-3 py-2 rounded-l-md text-sm transition-colors"
+                            title="Subscribe publicly - other users will see this feed in Browse Podcasts"
+                          >
+                            {isSubmitting && addingFeedUrl === result.feedUrl && !addingPrivately ? 'Adding...' : 'Subscribe'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAddFromSearch(result, true)}
+                            disabled={isSubmitting && addingFeedUrl === result.feedUrl}
+                            className="bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 text-white px-2 py-2 rounded-r-md text-sm transition-colors"
+                            title="Subscribe privately - this feed won't appear in Browse Podcasts for other users"
+                          >
+                            {isSubmitting && addingFeedUrl === result.feedUrl && addingPrivately ? (
+                              <span className="px-1">...</span>
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                              </svg>
+                            )}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFromSearch(result)}
+                          disabled={isSubmitting && addingFeedUrl === result.feedUrl}
+                          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-3 py-2 rounded-md text-sm transition-colors"
+                        >
+                          {isSubmitting && addingFeedUrl === result.feedUrl ? 'Adding...' : 'Add'}
+                        </button>
+                      )}
                     </div>
                   </li>
                 ))}

@@ -275,8 +275,8 @@ class PodcastProcessor:
         transcript_segments = self.transcription_manager.transcribe(post)
         self._raise_if_cancelled(job, cancel_callback)
 
-        # Step 3: Classify ad segments
-        self._classify_ad_segments(post, job, transcript_segments)
+        # Step 3: Classify ad segments (returns the preset ID used)
+        preset_id = self._classify_ad_segments(post, job, transcript_segments)
         self._raise_if_cancelled(job, cancel_callback)
 
         # Step 4: Process audio (remove ad segments)
@@ -285,8 +285,9 @@ class PodcastProcessor:
         )
         self.audio_processor.process_audio(post, processed_audio_path)
 
-        # Update the database with the processed audio path
+        # Update the database with the processed audio path and preset used
         post.processed_audio_path = processed_audio_path
+        post.processed_with_preset_id = preset_id
         self.db_session.commit()
 
         # Mark job complete
@@ -309,7 +310,7 @@ class PodcastProcessor:
         post: Post,
         job: ProcessingJob,
         transcript_segments: List[TranscriptSegment],
-    ) -> None:
+    ) -> int | None:
         """
         Classify ad segments in the transcript.
 
@@ -317,20 +318,57 @@ class PodcastProcessor:
             post: The Post object being processed
             job: The ProcessingJob for tracking
             transcript_segments: The transcript segments to classify
+            
+        Returns:
+            The preset ID that was used, or None if using default prompts
         """
         self.status_manager.update_job_status(
             job, "running", 3, "Identifying ads", 75.0
         )
-        user_prompt_template = self.get_user_prompt_template(
-            DEFAULT_USER_PROMPT_TEMPLATE_PATH
-        )
-        system_prompt = self.get_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
+        
+        # Try to use active prompt preset, fallback to default files
+        system_prompt, user_prompt_template, preset_id = self._get_prompts_from_preset_or_default()
+        
         self.ad_classifier.classify(
             transcript_segments=transcript_segments,
             system_prompt=system_prompt,
             user_prompt_template=user_prompt_template,
             post=post,
         )
+        
+        return preset_id
+
+    def _get_prompts_from_preset_or_default(self) -> tuple[str, Template, int | None]:
+        """
+        Get prompts from active preset or fall back to default files.
+        
+        Returns:
+            Tuple of (system_prompt, user_prompt_template, preset_id or None)
+        """
+        from app.models import PromptPreset
+        
+        # Try to get active preset
+        active_preset = PromptPreset.query.filter_by(is_active=True).first()
+        
+        if active_preset:
+            self.logger.info(
+                f"Using active prompt preset: {active_preset.name} "
+                f"(aggressiveness: {active_preset.aggressiveness})"
+            )
+            from jinja2 import Template
+            return (
+                active_preset.system_prompt,
+                Template(active_preset.user_prompt_template),
+                active_preset.id,
+            )
+        
+        # Fallback to default files
+        self.logger.info("No active preset found, using default prompt files")
+        user_prompt_template = self.get_user_prompt_template(
+            DEFAULT_USER_PROMPT_TEMPLATE_PATH
+        )
+        system_prompt = self.get_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
+        return system_prompt, user_prompt_template, None
 
     def _handle_download_step(self, post: Post, job: ProcessingJob) -> None:
         """

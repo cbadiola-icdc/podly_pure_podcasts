@@ -69,7 +69,10 @@ class JobsManager:
 
     # ------------------------ Public API ------------------------
     def start_post_processing(
-        self, post_guid: str, priority: str = "interactive"
+        self,
+        post_guid: str,
+        priority: str = "interactive",
+        triggered_by_user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Idempotently start processing for a post. If an active job exists, return it.
@@ -82,7 +85,11 @@ class JobsManager:
             )
             self._set_run_id(run.id if run else None)
             result = SingleJobManager(
-                post_guid, self._status_manager, logger, run.id if run else None
+                post_guid,
+                self._status_manager,
+                logger,
+                run.id if run else None,
+                triggered_by_user_id=triggered_by_user_id,
             ).start_processing(priority)
         if result.get("status") in {"started", "running"}:
             self._wake_worker()
@@ -118,21 +125,13 @@ class JobsManager:
         return response
 
     def _ensure_jobs_for_all_posts(self, run_id: Optional[str]) -> int:
-        """Ensure every post has an associated ProcessingJob record."""
-        posts_without_jobs = (
-            Post.query.outerjoin(ProcessingJob, ProcessingJob.post_guid == Post.guid)
-            .filter(ProcessingJob.id.is_(None))
-            .all()
-        )
-
-        created = 0
-        for post in posts_without_jobs:
-            if post.whitelisted:
-                SingleJobManager(
-                    post.guid, self._status_manager, logger, run_id
-                ).ensure_job()
-                created += 1
-        return created
+        """
+        Previously auto-created jobs for all whitelisted posts.
+        Now returns 0 - jobs are only created on-demand via UI or RSS request.
+        This ensures episodes are enabled but not auto-processed.
+        """
+        # Don't auto-create jobs - processing is triggered on-demand only
+        return 0
 
     def get_post_status(self, post_guid: str) -> Dict[str, Any]:
         with scheduler.app.app_context():
@@ -174,6 +173,7 @@ class JobsManager:
 
             response = {
                 "status": job.status,
+                "job_id": job.id,
                 "step": job.current_step,
                 "step_name": job.step_name or "Unknown",
                 "total_steps": job.total_steps,
@@ -244,6 +244,7 @@ class JobsManager:
                         "job_id": job.id,
                         "post_guid": job.post_guid,
                         "post_title": post.title if post else None,
+                        "feed_id": post.feed_id if post else None,
                         "feed_title": post.feed.title if post and post.feed else None,
                         "status": job.status,
                         "priority": int(prio) if prio is not None else 0,
@@ -290,6 +291,7 @@ class JobsManager:
                         "job_id": job.id,
                         "post_guid": job.post_guid,
                         "post_title": post.title if post else None,
+                        "feed_id": post.feed_id if post else None,
                         "feed_title": post.feed.title if post and post.feed else None,
                         "status": job.status,
                         "priority": int(prio) if prio is not None else 0,

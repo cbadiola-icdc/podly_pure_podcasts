@@ -3,10 +3,16 @@ html, body {
   padding: 0 !important;
   height: 100% !important;
   overflow: hidden !important;
+  /* Prevent iOS bounce/overscroll */
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  /* Safe area insets for notched devices and browser chrome */
+  padding-bottom: env(safe-area-inset-bottom, 0) !important;
 }
 
 #root {
   height: 100vh !important;
+  height: 100dvh !important; /* Use dynamic viewport height for mobile browsers */
   overflow: hidden !important;
   max-width: none !important;
   margin: 0 !important;
